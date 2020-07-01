@@ -1,0 +1,12 @@
+{
+    "env": {
+        "MONGO_IP": "192.168.1.1",
+        "MONGO_PORT": "27017",
+        "MONGO_USER": "admin",
+        "MONGO_PW": "*admin@123",
+        "JWT_KEY": "secret",
+        "SESSION_EXPIRES": 900000,
+        "CONTEXT_PATH":"/api",
+        "PORT":5000
+    }
+}
