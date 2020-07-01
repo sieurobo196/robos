@@ -1,0 +1,305 @@
+const express = require("express");
+const router = express.Router();
+const mongoose = require("mongoose");
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
+
+const User = require("../models/user");
+const checkAuth = require('../utils/check-auth');
+
+router.post("/list", checkAuth, (req, res, next) => {
+    var username = req.body.username;
+    var pageSize = req.body.pageSize || 20;
+    var pageNo = req.body.pageNo || 1;
+    var query = {};
+    if (username && username !== '') {
+        query['username'] = { $regex: new RegExp(username, "i") };
+    }
+    query['status'] = 'ACTIVE';
+    User.find(query).skip((pageSize * pageNo) - pageSize).limit(pageSize)
+        .sort({'username': 1})
+        .select({ username: 1, status: 1, createdDate: 1, lastUpdateDate: 1 })
+        .exec()
+        .then(docs => {
+            if (docs.length >= 0) {
+                User.countDocuments(query).exec(function (err, count) {
+                    if (err) return next(err)
+                    res.status(200).json({ data: docs, totalRows: count })
+                })
+            } else {
+                res.status(404).json({
+                    message: 'No entries found'
+                });
+            }
+        })
+        .catch(err => {
+            console.log(err);
+            res.status(500).json({
+                error: err
+            });
+        });
+});
+
+router.post("/signup", checkAuth, (req, res, next) => {
+    User.find({ username: req.body.username })
+        .exec()
+        .then(user => {
+            if (user.length >= 1) {
+                return res.status(409).json({
+                    error: "Username exists"
+                });
+            } else {
+                bcrypt.hash(req.body.password + req.body.username, 10, (err, hash) => {
+                    if (err) {
+                        return res.status(500).json({
+                            error: 'Please try again later.'
+                        });
+                    } else {
+                        const user = new User({
+                            _id: new mongoose.Types.ObjectId(),
+                            username: req.body.username,
+                            password: hash,
+                            status: req.body.status,
+                            created_date: new Date(),
+                            last_update_date: new Date()
+                        });
+                        user
+                            .save()
+                            .then(result => {
+                                // console.log(result);
+                                res.status(201).json({
+                                    message: 'User created'
+                                });
+                            })
+                            .catch(err => {
+                                console.log(err);
+                                res.status(500).json({
+                                    error: err
+                                });
+                            });
+                    }
+                })
+            }
+        });
+});
+
+router.post("/login", (req, res, next) => {
+    User.find({ username: req.body.username })
+        .exec()
+        .then(user => {
+            if (user.length < 1) {
+                return res.status(401).json({
+                    error: "Invalid user."
+                });
+            }
+            bcrypt.compare(req.body.password + user[0].username, user[0].password, (err, result) => {
+                if (err || !result) {
+                    return res.status(401).json({
+                        error: "Invalid password"
+                    });
+                }
+                if (result) {
+                    const token = jwt.sign(
+                        {
+                            username: user[0].username,
+                            userId: user[0]._id
+                        },
+                        process.env.JWT_KEY,
+                        {
+                            // expiresIn count by second
+                            expiresIn: process.env.SESSION_EXPIRES,
+                            algorithm: 'HS256'
+                        }
+                    );
+                    return res.status(200).cookie('token', token, { maxAge: process.env.SESSION_EXPIRES }).send(
+                        {
+                            message: "Login successful",
+                            token: token
+                        }
+                    );
+                }
+                res.status(401).json({
+                    error: "Auth failed"
+                });
+            });
+        })
+        .catch(err => {
+            console.log(err);
+            res.status(500).json({
+                error: err
+            });
+        });
+});
+
+router.post("/getUserInfo", checkAuth, (req, res, next) => {
+    User.findById(req.body.userId || req.userData.userId).select({ username: 1, status: 1, createdDate: 1, lastUpdateDate: 1 })
+        .exec()
+        .then(doc => {
+            // console.log("From database", doc);
+            if (doc) {
+                res.status(200).json(doc);
+            } else {
+                res
+                    .status(404)
+                    .json({ error: "No valid entry found for user ID" });
+            }
+        })
+        .catch(err => {
+            console.log(err);
+            res.status(500).json({ error: err });
+        });
+});
+
+let checkOldPass = (id, oldPass) => {
+    return new Promise((resolve, reject) => {
+        User.findById(id).exec()
+            .then(doc => {
+                if (doc) {
+                    bcrypt.compare(oldPass + doc.username, doc.password, (err, result) => {
+                        if (err || !result) {
+                            return reject({ message: 'Old password is invalid' });
+                        }
+                        if (result) {
+                            return resolve({ username: doc.username });
+                        }
+                        return reject({ message: 'Old password is invalid' });
+                    });
+                } else {
+                    return reject({ error: "Invalid user." })
+                }
+            })
+    })
+}
+
+let updatePass = (id, doc, newPass) => {
+    return new Promise((resolve, reject) => {
+        bcrypt.hash(newPass + doc.username, 10, (err, hash) => {
+            if (err) {
+                return reject({
+                    error: "Cannot update password now. Plsease try again later."
+                });
+            } else {
+                const updateOps = {};
+                updateOps['password'] = hash;
+                updateOps['lastUpdateDate'] = new Date();
+                User.update({ _id: id }, { $set: updateOps })
+                    .exec()
+                    .then(result => {                        
+                        return resolve({ message: "Update password successfully." });
+                    })
+                    .catch(err => {
+                        return reject({
+                            error: err
+                        });
+                    });
+            }
+        })
+    })
+}
+
+let changePassword = async (id, oldPass, newPass) => {
+    try {
+        let doc = await checkOldPass(id, oldPass);
+        let result = await updatePass(id, doc, newPass);
+        return Promise.resolve(result);
+    } catch (e) {
+        return Promise.reject(e);
+    }
+}
+
+router.post("/change-password", checkAuth, (req, res, next) => {
+    const id = req.body.userId;
+
+    if (req.body.password !== req.body.confirmPassword || req.body.password === '') {
+        return res.status(500).json({
+            error: "New Password and  Confirm Password does not match."
+        });
+    }
+
+    if (req.body.password) {
+        changePassword(id, req.body.oldPass, req.body.password)
+            .then(response => res.status(200).json(response))
+            .catch(error => res.status(500).json(error));
+    }
+});
+
+router.post("/delete", checkAuth, (req, res, next) => {
+    const id = req.body.userId;
+    const updateOps = {};
+    updateOps['status'] = 'CLOSED';
+    updateOps['lastUpdateDate'] = new Date();
+    User.update({ _id: id }, { $set: updateOps })
+        .exec()
+        .then(result => {
+            res.status(200).json(result);
+        })
+        .catch(err => {
+            console.log(err);
+            res.status(500).json({
+                error: err
+            });
+        });
+});
+
+
+router.get("/islogin", checkAuth, (req, res, next) => {
+    res.status(200).json({
+        message: "OK"
+    });
+});
+
+router.get("/logout", (req, res, next) => {
+    res.status(200).clearCookie('token').json({
+        message: "OK"
+    });
+});
+
+router.get("/add-admin/:username/:password", (req, res, next) => {
+    User.find({ username: req.params.username })
+        .exec()
+        .then(user => {
+            if (user.length >= 1) {
+                return res.status(409).json({
+                    error: "Username exists"
+                });
+            } else {
+                bcrypt.hash(req.params.password + req.params.username, 10, (err, hash) => {
+                    if (err) {
+                        return res.status(500).json({
+                            error: 'Please try again later.'
+                        });
+                    } else {
+                        const user = new User({
+                            _id: new mongoose.Types.ObjectId(),
+                            username: req.params.username,
+                            password: hash,
+                            status: 'ACTIVE',
+                            created_date: new Date(),
+                            last_update_date: new Date()
+                        });
+                        user
+                            .save()
+                            .then(result => {
+                                res.status(201).json({
+                                    message: 'User created'
+                                });
+                            })
+                            .catch(err => {
+                                console.log(err);
+                                res.status(500).json({
+                                    error: err
+                                });
+                            });
+                    }
+                })
+            }
+        })
+        .catch(err => {
+            console.log(err);
+            res.status(500).json({
+                message: err
+            });
+        });
+});
+
+module.exports = router;
