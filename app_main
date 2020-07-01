@@ -1,0 +1,70 @@
+const express = require('express');
+const app = express();
+const morgan = require('morgan');
+const mongoose = require('mongoose');
+const bodyParser = require('body-parser');
+const cookieParser = require('cookie-parser');
+const path = require("path");
+const userRoutes = require("./api/controllers/user-controller");
+const issueRoutes = require("./api/controllers/issue-controller");
+const contextPath = process.env.CONTEXT_PATH || "/alarm-service";
+
+mongoose.connect(
+    "mongodb://" + process.env.MONGO_IP + ":" + process.env.MONGO_PORT + process.env.DB_NAME,
+    {
+        useNewUrlParser: true,
+        user: process.env.MONGO_USER,
+        pass: process.env.MONGO_PW
+    }
+).then(() => {
+    console.log('Connect to MongoDB Server');
+})
+    .catch((err) => {
+        console.log('Error on start: ' + err.stack);
+        process.exit(1);
+    });
+mongoose.Promise = global.Promise;
+
+app.use(morgan('combined'));
+app.use(bodyParser.urlencoded({extended: false}));
+app.use(bodyParser.json());
+app.use(cookieParser());
+
+app.use((req, res, next) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header(
+        "Access-Control-Allow-Headers",
+        "Origin, X-Requested-With, Content-Type, Accept, Authorization"
+    );
+    if (req.method === "OPTIONS") {
+        res.header("Access-Control-Allow-Methods", "PUT, POST, PATCH, DELETE, GET");
+        return res.status(200).json({});
+    }
+    next();
+});
+
+// Routes which should handle requests
+app.use('', express.static('static'));
+app.use(contextPath + "/users", userRoutes);
+app.use(contextPath + "/issues", issueRoutes);
+app.get('/*', function (req, res) {
+    res.sendFile(path.join(__dirname, 'static', 'index.html'));
+});
+
+app.use((req, res, next) => {
+    const error = new Error("Not found");
+    error.status = 404;
+    next(error);
+});
+
+app.use((error, req, res, next) => {
+    res.status(error.status || 500);
+    res.json({
+        error: {
+            message: error.message
+        }
+    });
+
+});
+
+module.exports = app;
