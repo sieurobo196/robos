@@ -1,0 +1,29 @@
+const jwt = require('jsonwebtoken');
+
+module.exports = (req, res, next) => {
+    const token = req.headers.authorization || req.cookies['token'];
+    jwt.verify(token, process.env.JWT_KEY, function (err, decoded) {
+        if (err) {
+            return res.status(401).json({ message: 'Auth failed' });
+        }
+        req.userData = decoded;
+        let currentTime = decoded.exp - new Date().getTime()/1000;
+        //if expires second < 5 minutes
+        if(currentTime < 300) {
+            const token = jwt.sign(
+                {
+                    username: decoded.username,
+                    userId: decoded.userId
+                },
+                process.env.JWT_KEY,
+                {
+                    // expiresIn count by second
+                    expiresIn: process.env.SESSION_EXPIRES,
+                    algorithm: 'HS256'
+                }
+            );
+            res.cookie('token', token, { maxAge: process.env.SESSION_EXPIRES });
+        }
+        next();
+    }); 
+};
